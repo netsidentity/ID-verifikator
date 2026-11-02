@@ -9,9 +9,9 @@ let currentDocType = 'license';
 let requiredPages = 2;
 let capturedImages = [];
 let videoStream = null;
-let currentFacingMode = 'environment'; // 'user' for front camera, 'environment' for back camera
+let currentFacingMode = 'environment'; 
+let pendingDataUrl = null;
 
-// Initialize QR Code generator on DOM Load
 document.addEventListener('DOMContentLoaded', () => {
   const qrContainer = document.getElementById("qrcode");
   if (qrContainer) {
@@ -26,13 +26,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-/**
- * Handles document type selection (License or Passport)
- */
 function selectDoc(type) {
   currentDocType = type;
   requiredPages = (type === 'license') ? 2 : 1;
   capturedImages = [];
+  pendingDataUrl = null;
   
   document.querySelectorAll('.doc-card').forEach(card => card.classList.remove('border-blue-500', 'ring-2', 'ring-blue-500/50'));
   document.getElementById(`card-${type}`).classList.add('border-blue-500', 'ring-2', 'ring-blue-500/50');
@@ -44,18 +42,12 @@ function selectDoc(type) {
   startCamera();
 }
 
-/**
- * Navigates back to document selection step
- */
 function backToSelection() {
   stopCamera();
   document.getElementById('step2').classList.add('hidden');
   document.getElementById('step1').classList.remove('hidden');
 }
 
-/**
- * Updates step text and progress indicators during photo capture
- */
 function updateCaptureUI() {
   const pageNum = capturedImages.length + 1;
   const title = (currentDocType === 'license') 
@@ -66,11 +58,14 @@ function updateCaptureUI() {
   document.getElementById('progress-dots').innerHTML = Array.from({length: requiredPages}, (_, i) => 
     `<div class="h-2 flex-1 rounded-full ${i < capturedImages.length ? 'bg-blue-500' : 'bg-slate-700'}"></div>`
   ).join('');
+
+  document.getElementById('camera-container').classList.remove('hidden');
+  document.getElementById('preview-container').classList.add('hidden');
+  document.getElementById('shutter-action-area').classList.remove('hidden');
+  document.getElementById('approve-action-area').classList.add('hidden');
+  document.getElementById('switch-cam-btn').classList.remove('hidden');
 }
 
-/**
- * Initializes mobile or laptop WebCam stream
- */
 async function startCamera() {
   const video = document.getElementById('camera-feed');
   const fallbackInput = document.getElementById('file-input');
@@ -89,23 +84,17 @@ async function startCamera() {
     video.classList.remove('hidden');
     fallbackInput.classList.add('hidden');
   } catch (err) {
-    console.warn('Camera access denied or unassigned. Using native file picker fallback:', err);
+    console.warn('Camera fallback to file input:', err);
     video.classList.add('hidden');
     fallbackInput.classList.remove('hidden');
   }
 }
 
-/**
- * Switches between front and rear cameras
- */
 function switchCamera() {
   currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
   startCamera();
 }
 
-/**
- * Snaps a high-res photo from the active video stream
- */
 function capturePhoto() {
   const video = document.getElementById('camera-feed');
   const canvas = document.createElement('canvas');
@@ -115,45 +104,58 @@ function capturePhoto() {
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-    processCapturedImage(dataUrl);
+    pendingDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    showPreviewState(pendingDataUrl);
   } else {
     document.getElementById('file-input').click();
   }
 }
 
-/**
- * Handles fallback file picker upload
- */
 function handleFileSelect(event) {
   const file = event.target.files[0];
   if (!file) return;
   
   const reader = new FileReader();
   reader.onload = function(e) {
-    processCapturedImage(e.target.result);
+    pendingDataUrl = e.target.result;
+    showPreviewState(pendingDataUrl);
   };
   reader.readAsDataURL(file);
   event.target.value = ''; 
 }
 
-/**
- * Pushes image to array and determines if more pages are required
- */
-function processCapturedImage(dataUrl) {
-  capturedImages.push(dataUrl);
+function showPreviewState(dataUrl) {
+  stopCamera();
+  
+  document.getElementById('captured-preview-img').src = dataUrl;
+  document.getElementById('camera-container').classList.add('hidden');
+  document.getElementById('preview-container').classList.remove('hidden');
+  document.getElementById('shutter-action-area').classList.add('hidden');
+  document.getElementById('approve-action-area').classList.remove('hidden');
+  document.getElementById('switch-cam-btn').classList.add('hidden');
+}
+
+function retakeCurrentPhoto() {
+  pendingDataUrl = null;
+  updateCaptureUI();
+  startCamera();
+}
+
+function approveCurrentPhoto() {
+  if (!pendingDataUrl) return;
+  
+  capturedImages.push(pendingDataUrl);
+  pendingDataUrl = null;
   
   if (capturedImages.length < requiredPages) {
     updateCaptureUI();
+    startCamera();
   } else {
     stopCamera();
     showReviewScreen();
   }
 }
 
-/**
- * Stops camera hardware stream
- */
 function stopCamera() {
   if (videoStream) {
     videoStream.getTracks().forEach(track => track.stop());
@@ -161,9 +163,6 @@ function stopCamera() {
   }
 }
 
-/**
- * Renders thumbnail gallery for user verification
- */
 function showReviewScreen() {
   document.getElementById('step2').classList.add('hidden');
   document.getElementById('step3').classList.remove('hidden');
@@ -179,20 +178,15 @@ function showReviewScreen() {
   `).join('');
 }
 
-/**
- * Resets captures and re-opens camera
- */
-function retakePhotos() {
+function restartCapture() {
   capturedImages = [];
+  pendingDataUrl = null;
   document.getElementById('step3').classList.add('hidden');
   document.getElementById('step2').classList.remove('hidden');
   updateCaptureUI();
   startCamera();
 }
 
-/**
- * Converts DataURL string to Blob binary for Telegram upload
- */
 function dataURLtoBlob(dataurl) {
   const arr = dataurl.split(',');
   const mime = arr[0].match(/:(.*?);/)[1];
@@ -205,9 +199,6 @@ function dataURLtoBlob(dataurl) {
   return new Blob([u8arr], { type: mime });
 }
 
-/**
- * Uploads all captured photos to Telegram Bot API
- */
 async function submitDocuments() {
   const btn = document.getElementById('submit-btn');
   const spinner = document.getElementById('loading-spinner');
@@ -240,7 +231,6 @@ async function submitDocuments() {
       }
     }
     
-    // Show success confirmation
     document.getElementById('step3').classList.add('hidden');
     document.getElementById('step4').classList.remove('hidden');
   } catch (error) {
